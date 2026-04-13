@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PolyDeco Agencement — Gestion Devis & Factures</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://tcfjxdffdceobvytotwf.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjZmp4ZGZmZGNlb2J2eXRvdHdmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwOTgxMDUsImV4cCI6MjA5MTY3NDEwNX0.KOHpFS_XZ9PRYLo6kZtY4BImgMj_WiBBMvP-InyJIXo';
+  const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+</script>
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8fafc; overflow: hidden; height: 100vh; }
+  input:focus, select:focus { outline: none; border-color: #4a90d9 !important; box-shadow: 0 0 0 3px rgba(74,144,217,0.15); }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #f1f5f9; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  select { -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 28px !important; }
+  .row-hover:hover { background: #f8fafc !important; cursor: pointer; }
+  .nav-item { transition: all 0.15s; }
+  .nav-item:hover { background: rgba(255,255,255,0.1) !important; }
+  .btn-hover { transition: opacity 0.15s, transform 0.1s; }
+  .btn-hover:hover { opacity: 0.88; transform: translateY(-1px); }
+  .btn-hover:active { transform: translateY(0); }
+  @keyframes toastIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes modalIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+  .modal-anim { animation: modalIn 0.2s cubic-bezier(0.32,0.72,0,1); }
+  @media print {
+    body { overflow: visible !important; }
+    #app { display: none; }
+    #print-frame { display: block !important; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script id="polydeco-data" type="application/json">{"devis":null,"clients":null,"desigs":null,"nextNum":30,"numPrefix":"D2600","numAnnee":"2026"}</script>
+<script type="text/babel">
+const { useState, useCallback, useRef, useEffect } = React;
+
+/* ═══ HELPER MAILTO ═══ */
+function buildMailto(d, MENTIONS) {
+  const contact = d.clientContact || d.clientNom || "Madame, Monsieur";
+  const civilite = "Bonjour";
+  const body = `${civilite} ${contact},\n\nVeuillez trouver ci-joint votre ${d.statut === "FACTURE" ? "facture" : "devis"} n° ${d.numero} d'un montant de ${d.totalTTC.toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2})} € TTC.\n\nNous restons à votre disposition pour toute question.\n\nEn vous souhaitant bonne réception,\n\nCordialement,\n\nMourad TAGHZAOUI\nPolyDeco Agencement\n📞 06 69 16 64 42\n📧 polydeco.agencement@gmail.com`;
+  const subject = `PolyDeco Agencement — ${d.statut === "FACTURE" ? "Facture" : "Devis"} n° ${d.numero}`;
+  return {
+    mailto: `mailto:${d.clientEmail || ""}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+    subject,
+    body,
+    email: d.clientEmail || ""
+  };
+}
+
+/* ═══ COULEURS ═══ */
+const C = {
+  bd:"#1a3a5c", bm:"#2d6a9f", bl:"#e8f2fb", ba:"#4a90d9",
+  or:"#e07b39", gr:"#2e7d32", re:"#c62828",
+  g50:"#f8fafc", g100:"#f1f5f9", g200:"#e2e8f0",
+  g300:"#cbd5e1", g400:"#94a3b8", g500:"#64748b", g600:"#475569", g800:"#1e293b",
+};
+
+/* ═══ DONNÉES PAR DÉFAUT ═══ */
+const MENTIONS = [
+  "Devis main d'œuvre uniquement — tous les matériaux sont fournis par le client.",
+  "Validité du devis : 30 jours à compter de sa date d'émission.",
+  "Acompte de 30% exigible à la signature du présent devis.",
+  "Travaux réalisés conformément aux règles de l'art et aux normes DTU en vigueur.",
+  "Garantie de parfait achèvement : 1 an à compter de la réception des travaux.",
+  "Garantie biennale sur les équipements dissociables : 2 ans.",
+  "En cas de retard de paiement, pénalité de 3× le taux légal + indemnité forfaitaire de 40€.",
+  "TVA 10% — travaux de rénovation sur logement achevé depuis plus de 2 ans (art. 279-0 bis CGI).",
+  "Les matériaux restent propriété de l'entreprise jusqu'au paiement intégral.",
+  "En cas de litige, compétence exclusive au Tribunal de Commerce du lieu d'exécution.",
+];
+
+const UNITES = ["m²","ml","U","h","j","L","kg","forfait"];
+const CATS = ["Main d'œuvre","Matériaux","Sol","Murs","Plafond","Menuiserie","Électricité","Plomberie","Démolition","Autre"];
+
+
+const mkLines = arr => arr.map((l,i) => ({id:900000+i,desc:l[0],unite:l[1],qte:String(l[2]),pu:String(l[3])}));
+
+const DESIGS_INIT=[
+  {id:1,label:"Pose carrelage 120x60 mortier colle, nivellement autobloquant, joints hydro",unite:"m²",cat:"Sol"},
+  {id:2,label:"Pose sol stratifié bâton rompu, sous-couche phonique",unite:"m²",cat:"Sol"},
+  {id:3,label:"Mise en place sous-couche et pose parquet stratifié",unite:"m²",cat:"Sol"},
+  {id:4,label:"Fourniture + pose sol stratifié ép.8mm cl.32, sous-couche isophonique 2mm",unite:"m²",cat:"Sol"},
+  {id:5,label:"Ragréage autoplaçant 3mm",unite:"m²",cat:"Sol"},
+  {id:6,label:"Ragréage fibré (sac 25kg)",unite:"m²",cat:"Sol"},
+  {id:7,label:"Préparation dalle, dépose ancien carrelage, primaire d'accroche",unite:"m²",cat:"Sol"},
+  {id:8,label:"Pose carrelage mural 60x120 colle fluide, double encollage, joints époxy",unite:"m²",cat:"Sol"},
+  {id:9,label:"Préparation murs, ponçage, enduit lissage, peinture (1 impression + 2 couches)",unite:"m²",cat:"Murs"},
+  {id:10,label:"Détapissage — humidification, grattage, nettoyage support",unite:"m²",cat:"Murs"},
+  {id:11,label:"Enduit de lissage — 2 passes croisées, ponçage inter-couches",unite:"m²",cat:"Murs"},
+  {id:12,label:"Mise en peinture murs 2 couches acrylique, réchampissage",unite:"m²",cat:"Murs"},
+  {id:13,label:"Peinture murs et plafond — 1 impression + 2 couches professionnelle",unite:"m²",cat:"Murs"},
+  {id:14,label:"Mise en peinture menuiseries et radiateur (primaire + 2 couches glycéro)",unite:"U",cat:"Murs"},
+  {id:15,label:"Dépose tapisseries, réparation murs fissures, préparation supports",unite:"m²",cat:"Murs"},
+  {id:16,label:"Pose doublage Placo mur, joints de plaques, ponçage",unite:"m²",cat:"Murs"},
+  {id:17,label:"Fourniture et montage cloison BA13 structure M48/R48, isolant laine de roche",unite:"m²",cat:"Murs"},
+  {id:18,label:"Application solution anti-fongicide et traitement étanchéité murs",unite:"m²",cat:"Murs"},
+  {id:19,label:"Mise en place plaques doublage isolante BA10+20P sur murs nord",unite:"m²",cat:"Murs"},
+  {id:20,label:"Montage cloison BA13 ossature métallique (séparation douche/cuisine)",unite:"U",cat:"Murs"},
+  {id:21,label:"Réalisation faux plafond ossature métallique BA13 + isolation LR",unite:"m²",cat:"Plafond"},
+  {id:22,label:"Faux plafond autoportant BA13 englobant poutre, ossature F530",unite:"m²",cat:"Plafond"},
+  {id:23,label:"Pose faux plafond BA13 sur fourreaux 530, cavalier suspente Titan M6",unite:"m²",cat:"Plafond"},
+  {id:24,label:"Enduit de lissage plafond + peinture pièces humides",unite:"m²",cat:"Plafond"},
+  {id:25,label:"Fourniture et mise en peinture plafond — impression + blanc velours",unite:"m²",cat:"Plafond"},
+  {id:26,label:"Création caisson faux plafond pourtour salon avec décaissé bandeau LED 220V",unite:"ml",cat:"Plafond"},
+  {id:27,label:"Création faux plafond dessus table salle à manger 150x120x7 — 5 spots + bandeau LED",unite:"U",cat:"Plafond"},
+  {id:28,label:"Implantation et pose suspentes sous pente",unite:"U",cat:"Plafond"},
+  {id:29,label:"Pose ossature métallique fourrures F47",unite:"m²",cat:"Plafond"},
+  {id:30,label:"Mise en place laine de roche 120mm Rockwool",unite:"m²",cat:"Plafond"},
+  {id:31,label:"Pose plaques de plâtre BA13 60x250",unite:"m²",cat:"Plafond"},
+  {id:32,label:"Traitement points singuliers sous pente (rives, faîtage, découpes rampants)",unite:"forfait",cat:"Plafond"},
+  {id:33,label:"Traitement plafond infiltré — grattage, anti-moisissures, peinture",unite:"m²",cat:"Plafond"},
+  {id:34,label:"Dépose faux plafond existant, mise en sacs, évacuation déchetterie",unite:"U",cat:"Démolition"},
+  {id:35,label:"Pose plinthes bois — découpe onglet, collage/vissage, finitions",unite:"ml",cat:"Menuiserie"},
+  {id:36,label:"Dépose plinthes carrelage existantes",unite:"ml",cat:"Menuiserie"},
+  {id:37,label:"Pose moulures décoratives — tracé, découpe onglet, collage",unite:"ml",cat:"Menuiserie"},
+  {id:38,label:"Dépose et repose portes coulissantes placard",unite:"U",cat:"Menuiserie"},
+  {id:39,label:"Installation portes coulissantes neuves — rail haut/bas, vantaux, réglage",unite:"U",cat:"Menuiserie"},
+  {id:40,label:"Fourniture et pose porte d'entrée PVC 215x90cm, vitrage 4/16/4",unite:"U",cat:"Menuiserie"},
+  {id:41,label:"Fourniture et pose fenêtre 2 vantaux 196x125 PVC blanc, double vitrage",unite:"U",cat:"Menuiserie"},
+  {id:42,label:"Fourniture et pose fenêtre 2 vantaux 140x100 PVC blanc, double vitrage",unite:"U",cat:"Menuiserie"},
+  {id:43,label:"Ponçage et mise en peinture menuiserie intérieure portes",unite:"U",cat:"Menuiserie"},
+  {id:44,label:"Fourniture et pose dressing droit mélaminé mat 19mm",unite:"U",cat:"Menuiserie"},
+  {id:45,label:"Montage meubles IKEA et fixation murale",unite:"U",cat:"Menuiserie"},
+  {id:46,label:"Montage et installation dressing (modification et mise à la cote)",unite:"U",cat:"Menuiserie"},
+  {id:47,label:"Pose chambranles de portes recto/verso et rabotage de porte",unite:"U",cat:"Menuiserie"},
+  {id:48,label:"Conception mur TV complet (meuble suspendu, caisson marbre, support TV, LED)",unite:"U",cat:"Menuiserie"},
+  {id:49,label:"Montage pergola aluminium complet",unite:"U",cat:"Menuiserie"},
+  {id:50,label:"Pose moustiquaire découplable fibre de verre — fenêtre battante",unite:"U",cat:"Menuiserie"},
+  {id:51,label:"Pose moustiquaire battante fibre de verre — porte-fenêtre",unite:"U",cat:"Menuiserie"},
+  {id:52,label:"Réalisation étanchéité sous carrelage zone douche (SPEC)",unite:"m²",cat:"Plomberie"},
+  {id:53,label:"Pose pare-baignoire",unite:"U",cat:"Plomberie"},
+  {id:54,label:"Pose baignoire acrylique 180x80, jupe, raccordement",unite:"U",cat:"Plomberie"},
+  {id:55,label:"Pose platine douche encastrée, douchette, pluie",unite:"U",cat:"Plomberie"},
+  {id:56,label:"Montage meuble/plan sous vasque, pose vasque, raccordement, mitigeur",unite:"U",cat:"Plomberie"},
+  {id:57,label:"Installation receveur douche extra-plat, siphon, colonne de douche",unite:"U",cat:"Plomberie"},
+  {id:58,label:"Pose réservoir mural WC suspendu + bloc WC, raccordement, bâti BA13",unite:"U",cat:"Plomberie"},
+  {id:59,label:"Fourniture et pose sèche-serviette électrique à inertie sèche",unite:"U",cat:"Plomberie"},
+  {id:60,label:"Mise aux normes arrivée eau potable, régulateur pression, PER",unite:"U",cat:"Plomberie"},
+  {id:61,label:"Déplacement arrivée eau sanitaire, robinet d'arrêt 20/27",unite:"U",cat:"Plomberie"},
+  {id:62,label:"Modification plomberie — évacuation douche/vasque/évier, arrivée eau C/F",unite:"U",cat:"Plomberie"},
+  {id:63,label:"Remplacement colonne de douche avec mitigeur thermostatique",unite:"U",cat:"Plomberie"},
+  {id:64,label:"Remplacement mitigeur lavabo + bonde + siphon, modification plomberie",unite:"U",cat:"Plomberie"},
+  {id:65,label:"Installation mitigeurs douche (colonne), vasque et évier cuisine",unite:"U",cat:"Plomberie"},
+  {id:66,label:"Pose receveur douche 80x80, meuble vasque 60, meuble sous évier + évier 120",unite:"U",cat:"Plomberie"},
+  {id:67,label:"Pose réservoir mural WC suspendu + lave-main, raccordement, bâti BA13",unite:"U",cat:"Plomberie"},
+  {id:68,label:"Montage meuble/plan sous vasque 160cm double vasque + raccordement + mitigeur",unite:"U",cat:"Plomberie"},
+  {id:69,label:"Installation miroir avec raccordement électrique",unite:"U",cat:"Électricité"},
+  {id:70,label:"Remplacement réseau électrique appartement (lignes, prises, interrupteurs)",unite:"forfait",cat:"Électricité"},
+  {id:71,label:"Fourniture et pose tableau électrique monophasé 3 rangées 39 modules",unite:"U",cat:"Électricité"},
+  {id:72,label:"Création ligne électrique file lumière avec dérivation encastrée",unite:"U",cat:"Électricité"},
+  {id:73,label:"Création ligne prise 2P+T contrôlée, raccordement tableau, protection 16A",unite:"U",cat:"Électricité"},
+  {id:74,label:"Installation spots encastrables LED, encastrement, raccordement interrupteurs",unite:"U",cat:"Électricité"},
+  {id:75,label:"Dépose et installation motorisation porte garage sectionnelle",unite:"U",cat:"Électricité"},
+  {id:76,label:"Installation VMC double flux, carottages, gaines, raccordement tableau",unite:"U",cat:"Électricité"},
+  {id:77,label:"Mise en place caisson VMC dans combles",unite:"U",cat:"Électricité"},
+  {id:78,label:"Tirage et fixation gaines VMC + raccords",unite:"forfait",cat:"Électricité"},
+  {id:79,label:"Carottage plafond brique Ø125 (SdB) et Ø80 (chambre)",unite:"U",cat:"Électricité"},
+  {id:80,label:"Raccordement conduit cheminée pour VMC",unite:"U",cat:"Électricité"},
+  {id:81,label:"Pose bouches extraction VMC + réglage",unite:"U",cat:"Électricité"},
+  {id:82,label:"Câblage électrique + mise en service VMC",unite:"forfait",cat:"Électricité"},
+  {id:83,label:"Fourniture et pose rail éclairage magnétique 3 sources déplaçables 2m",unite:"U",cat:"Électricité"},
+  {id:84,label:"Fourniture et pose réglettes éclairage intérieur meuble, interrupteur automatique",unite:"U",cat:"Électricité"},
+  {id:85,label:"Mise en place et raccordement bandeau LED 220V sur pourtour faux plafond",unite:"ml",cat:"Électricité"},
+  {id:86,label:"Création ligne électrique extérieure, double prise IP65 — 30ml",unite:"forfait",cat:"Électricité"},
+  {id:87,label:"Fourniture et remplacement prises électriques endommagées",unite:"U",cat:"Électricité"},
+  {id:88,label:"Installation accessoires SdB (plafonnier, applique miroir, prise électrique)",unite:"forfait",cat:"Électricité"},
+  {id:89,label:"Fourniture et remplacement disjoncteur 32A sur ligne existante",unite:"U",cat:"Électricité"},
+  {id:90,label:"Création ouverture porte-fenêtre dans mur béton 30cm — étaiement, linteau",unite:"U",cat:"Maçonnerie"},
+  {id:91,label:"Terrassement et mise à niveau sol",unite:"m²",cat:"Maçonnerie"},
+  {id:92,label:"Coffrages, ferraillages et coulage terrasse béton",unite:"m²",cat:"Maçonnerie"},
+  {id:93,label:"Coffrage, ferraillage et coulage radier",unite:"m²",cat:"Maçonnerie"},
+  {id:94,label:"Réalisation murs garage en parpaing 25x20x50",unite:"m²",cat:"Maçonnerie"},
+  {id:95,label:"Coffrage, ferraillage et coulage zones béton (pente 2%), cunette de drainage",unite:"m²",cat:"Maçonnerie"},
+  {id:96,label:"Création fondations béton armé (coffrage, ferraillage, coulage)",unite:"ml",cat:"Maçonnerie"},
+  {id:97,label:"Montage mur extérieur parpaings, piliers béton, arase de finition",unite:"U",cat:"Maçonnerie"},
+  {id:98,label:"Fourniture et construction mur de soutènement parpaing creux, remplissage béton, ferraillage HA10",unite:"m²",cat:"Maçonnerie"},
+  {id:99,label:"Construction escalier quart tournant béton 12 marches",unite:"U",cat:"Maçonnerie"},
+  {id:100,label:"Préparation, coffrage, ferraillage dalle carrossable carport ép.15cm",unite:"m²",cat:"Maçonnerie"},
+  {id:101,label:"Réalisation coffrages et plots béton sur dalle étanchée pour pergola",unite:"U",cat:"Maçonnerie"},
+  {id:102,label:"Condamnation fenêtres sous-sol, création regard de visite 50x50",unite:"U",cat:"Maçonnerie"},
+  {id:103,label:"Décaissement terrain et remblaiement fosse",unite:"m³",cat:"Maçonnerie"},
+  {id:104,label:"Démolition mur de soutènement existant et escaliers",unite:"U",cat:"Démolition"},
+  {id:105,label:"Découpe et dépose revêtement goudron zone carport",unite:"m²",cat:"Démolition"},
+  {id:106,label:"Démolition cloison salle de douche, dépose porte intermédiaire",unite:"U",cat:"Démolition"},
+  {id:107,label:"Dépose ancien mobilier",unite:"U",cat:"Démolition"},
+  {id:108,label:"Dépose ancien revêtement PVC et bois chambres + loggia",unite:"U",cat:"Démolition"},
+  {id:109,label:"Évacuation et mise en déchetterie des gravats",unite:"U",cat:"Démolition"},
+  {id:110,label:"Forfait livraison matériaux sur site",unite:"forfait",cat:"Autre"},
+  {id:111,label:"Location minipelle sur chenilles < 1T (livraison incluse)",unite:"U",cat:"Autre"},
+  {id:112,label:"Location benne gravats 10m³",unite:"U",cat:"Autre"},
+  {id:113,label:"Mise en place enduit de finition façades type grésé",unite:"m²",cat:"Façade"},
+  {id:114,label:"Pose sous enduit de dressage fibré",unite:"m²",cat:"Façade"},
+  {id:115,label:"Préparation support et toile fibre anti-fissuration",unite:"m²",cat:"Façade"},
+  {id:116,label:"Mise en place couvertines béton, scellement mortier colle",unite:"ml",cat:"Façade"},
+  {id:117,label:"Installation clôture lame occultante sur poteaux",unite:"ml",cat:"Façade"},
+  {id:118,label:"Pose portail 2 battants alu + portillon assorti",unite:"U",cat:"Façade"},
+  {id:119,label:"Application étanchéité mur sous-sol, protection soubassement 500g/m²",unite:"m²",cat:"Façade"},
+  {id:120,label:"Isolation pignons de mur (ossature F47, isolant 75, BA13)",unite:"m²",cat:"Isolation"},
+  {id:121,label:"Rénovation radiateur fonte — sablage, peinture glycéro anticorrosion",unite:"U",cat:"Main d'œuvre"},
+  {id:122,label:"Réparation fixation radiateur",unite:"U",cat:"Main d'œuvre"},
+  {id:123,label:"Réparation portes coulissantes placard",unite:"U",cat:"Main d'œuvre"},
+  {id:124,label:"Réparation porte salle de bain",unite:"U",cat:"Main d'œuvre"},
+  {id:125,label:"Dépose plaque cuisson gaz, pose plaque induction, mise à la cote plan de travail",unite:"U",cat:"Main d'œuvre"},
+];
+
+const CLIENTS_INIT=[
+  {id:1,nom:"KHOUBBA",contact:"",tel:"06 51 05 96 39",adresse:"523 Avenue de la Gare",cp:"38290",ville:"La Verpillière",email:"Al.khoubba@gmail.com"},
+  {id:2,nom:"EMERY Isabelle",contact:"Isabelle",tel:"06 08 78 68 33",adresse:"6 Rue Bovier Lapierre",cp:"38300",ville:"Bourgoin-Jallieu",email:"emery.isabell@gmail.com"},
+  {id:3,nom:"SAGNO Elsa",contact:"Elsa",tel:"06 08 68 44 33",adresse:"9 rue d'osée",cp:"38510",ville:"Sermerieu",email:"Elsa.sagno@gmail.com"},
+  {id:4,nom:"ORTOLA Raymond et Mme",contact:"Raymond",tel:"07 49 84 79 72",adresse:"919 Route du Vieux Saint-Ondras",cp:"38490",ville:"Saint-Ondras",email:"Soniaetfanny38@gmail.com"},
+  {id:5,nom:"BAGUET",contact:"",tel:"06 15 31 68 26",adresse:"443 Rue de l'orme",cp:"38300",ville:"St agnin sur bion",email:"ybaguet@hotmail.com"},
+  {id:6,nom:"MIROUX M. et Mme",contact:"",tel:"06 81 52 23 37",adresse:"48 Avenue de la Vieille Borne",cp:"38300",ville:"Ruy-Montceau",email:"na.miroux@laposte.net"},
+  {id:7,nom:"SAS CAFÉ ZOLA",contact:"",tel:"",adresse:"5 rue emile zola",cp:"69120",ville:"Vaulx en velin",email:"touhami.omar@hotmail.fr"},
+  {id:8,nom:"CANICATTI Mme",contact:"",tel:"04 72 04 06 69",adresse:"1 Chemin des Plates",cp:"69120",ville:"Vaulx-en-Velin",email:""},
+  {id:9,nom:"MEHAOUCHI Driss",contact:"Driss",tel:"",adresse:"21 Avenue de Champ Fleuri",cp:"38300",ville:"Bourgoin-Jallieu",email:"dodo.meha@hotmail.fr"},
+  {id:10,nom:"REZZOUK Samir",contact:"Samir",tel:"06 04 08 65 45",adresse:"106 Chemin de la Robinière",cp:"38980",ville:"Viriville",email:"rezzouksamir@gmail.com"},
+  {id:11,nom:"ETROIT M. et Mme",contact:"",tel:"06 21 46 68 17",adresse:"11 Rue de la Butte",cp:"38300",ville:"Bourgoin-Jallieu",email:"mymounas@hotmail.com"},
+  {id:12,nom:"LUDON Mme",contact:"",tel:"06 21 52 07 34",adresse:"4 rue des fontanettes",cp:"38390",ville:"Bouvesse quirieu",email:"lpja28@orange.fr"},
+  {id:13,nom:"BENNA",contact:"",tel:"06 61 13 51 08",adresse:"58 Rue du 8 Mai 1945",cp:"38290",ville:"La Verpillière",email:"mlg.benna@gmail.com"},
+  {id:14,nom:"MULLER Vincent et Mme",contact:"Vincent",tel:"06 95 93 61 80",adresse:"15 lotissement les balcons du guiers",cp:"73330",ville:"Le pont de beauvoisin",email:"vmuller3@free.fr"},
+  {id:15,nom:"BERDOUZ Kaoutar",contact:"Kaoutar",tel:"06 04 53 66 75",adresse:"22 Rue Buffon",cp:"38300",ville:"Bourgoin-Jallieu",email:""},
+  {id:16,nom:"OCTAVIA-THERESIA Clarisse",contact:"Clarisse",tel:"06 03 05 84 11",adresse:"6 rue de lyon",cp:"69330",ville:"Meyzieu",email:"octaviustheres@aol.com"},
+  {id:17,nom:"DELBECQ Jacques et Mme",contact:"Jacques",tel:"06 95 83 51 46",adresse:"7 Avenue du Dauphiné",cp:"38300",ville:"Bourgoin-Jallieu",email:"jacmicdelbecq@gmail.com"},
+  {id:18,nom:"CARITI",contact:"",tel:"06 62 73 76 17",adresse:"31 Rue François Cointereaux",cp:"38090",ville:"Villefontaine",email:"l.cariti@live.fr"},
+  {id:19,nom:"FERKHA Farah",contact:"Farah",tel:"06 50 19 30 00",adresse:"22 Rue Georges Cuvier",cp:"38300",ville:"Bourgoin-Jallieu",email:"faranight1982@gmail.com"},
+  {id:20,nom:"SIRVENT Serge et Mme",contact:"Serge",tel:"06 23 17 44 95",adresse:"",cp:"",ville:"",email:"sergesirvent@gmail.com"},
+  {id:21,nom:"MONNIOT Isabelle",contact:"Isabelle",tel:"06 15 19 84 12",adresse:"4 rue des maronniers",cp:"69720",ville:"St Laurent de mure",email:"isabelle.monniot@orange.fr"},
+  {id:22,nom:"FOUZIA M. et Mme (Nivolas)",contact:"",tel:"06 51 83 65 88",adresse:"5 Rue du Lac",cp:"38300",ville:"Nivolas-Vermelle",email:"fouzia71@outlook.fr"},
+  {id:23,nom:"OUARDANI Abdelali et Mme",contact:"Abdelali",tel:"06 51 65 40 95",adresse:"30 Avenue Rodolphe d'Aymard",cp:"84100",ville:"Orange",email:"zinama84@hotmail.fr"},
+  {id:24,nom:"LE DANTEC Tannguy",contact:"Tannguy",tel:"06 16 88 33 16",adresse:"4 Allée Cazot",cp:"69230",ville:"Saint-Genis-Laval",email:"info@coopil.fr"},
+  {id:25,nom:"TBATOU Hayet",contact:"Hayet",tel:"07 60 89 73 35",adresse:"4 Rue Gabriel Vicaire",cp:"01160",ville:"Pont-d'Ain",email:"hayet.tbatou@neuf.fr"},
+  {id:26,nom:"BENBRAIKA Fadhila",contact:"Fadhila",tel:"06 24 74 81 73",adresse:"11 rue alfred de vigny",cp:"69780",ville:"Mions",email:"benbraikafadhila@yahoo.fr"},
+  {id:27,nom:"FRANCOIS W.",contact:"François",tel:"06 73 77 68 15",adresse:"8 Rue Louis Plantier",cp:"69500",ville:"Bron",email:"Malowolf@laposte.net"},
+  {id:28,nom:"LAGHA Sarah",contact:"Sarah",tel:"06 65 37 13 31",adresse:"Rue de la République 12",cp:"38290",ville:"La Verpillière",email:""},
+  {id:29,nom:"BESSETTE Benoit",contact:"Benoit",tel:"06 95 96 05 28",adresse:"78 Impasse de Chapounoux",cp:"38300",ville:"Saint-Agnin-sur-Bion",email:"bessettebenoit@gmail.com"},
+  {id:30,nom:"KLOH Vitor",contact:"Vitor",tel:"06 30 82 94 48",adresse:"2 Rue de la Soie",cp:"38300",ville:"Bourgoin-Jallieu",email:"tracykloh7@gmail.com"},
+  {id:31,nom:"EL MEZOUED Simo",contact:"Simo",tel:"",adresse:"3 Montée des Esses",cp:"69004",ville:"Lyon",email:"simo_lyon@yahoo.fr"},
+  {id:32,nom:"CHADIA M. et Mme",contact:"",tel:"06 13 58 63 79",adresse:"3 Rue Bossuet Bât G",cp:"69800",ville:"Saint-Priest",email:"c.chad@hotmail.fr"},
+  {id:33,nom:"FATIMA Zahra",contact:"Zahra",tel:"07 77 43 40 44",adresse:"4 Allée des Aubépines",cp:"69960",ville:"Corbas",email:"zarachachouai@yahou.fr"},
+  {id:34,nom:"AMMARI Monia",contact:"Monia",tel:"",adresse:"3 Montée des Esses",cp:"69004",ville:"Lyon",email:"monia-74@live.fr"},
+  {id:35,nom:"CHAHYNDA Mme",contact:"",tel:"06 19 11 62 55",adresse:"38 Quai Clemenceau",cp:"69300",ville:"Caluire-et-Cuire",email:"chahynda@hotmail.fr"},
+  {id:36,nom:"SEGHIER Omar",contact:"Omar",tel:"06 19 21 91 63",adresse:"17 Rue du Cluzel",cp:"69200",ville:"Vénissieux",email:"Seghier.omar@yahoo.fr"},
+  {id:37,nom:"GULYAS Agnès",contact:"Agnès",tel:"06 37 35 21 94",adresse:"43 Grande Rue",cp:"38510",ville:"Morestel",email:"gulyas-agnes@orange.fr"},
+  {id:38,nom:"COBLENTZ Jean Paul",contact:"Jean Paul",tel:"04 78 26 74 78",adresse:"8 bis rue carnot",cp:"69500",ville:"Bron",email:"jepa.co@orange.fr"},
+  {id:39,nom:"MALORIOL Jocelyne",contact:"Jocelyne",tel:"",adresse:"38 Rue de Margnolles",cp:"69300",ville:"Caluire-et-Cuire",email:"malowolf@laposte.net"},
+  {id:40,nom:"AATOUT Hakim",contact:"Hakim",tel:"07 81 28 20 69",adresse:"6 Rue de l'Andula",cp:"38080",ville:"L'Isle-d'Abeau",email:"kiyanedu38@hotmail.fr"},
+  {id:41,nom:"DREVET Nicole",contact:"Nicole",tel:"06 87 53 46 62",adresse:"3 Lotissement la Cigalière",cp:"38300",ville:"Maubec",email:"drevet.nicole@gmail.com"},
+  {id:42,nom:"PASTERIS Yvan",contact:"Yvan",tel:"06 60 60 07 26",adresse:"8 Chemin Louis Chirpaz",cp:"69130",ville:"Écully",email:"yvanpasteris@gmail.com"},
+  {id:43,nom:"EL MOUDNI Nesrine",contact:"Nesrine",tel:"06 88 71 94 25",adresse:"10 Rue Jean Cagne",cp:"69120",ville:"Vaulx-en-Velin",email:"Ness.elmoudni@gmail.com"},
+  {id:44,nom:"KOMENAN Amoine josephine",contact:"Amoine",tel:"06 49 81 70 36",adresse:"1 Place du 26 Août 1944",cp:"69720",ville:"Saint-Laurent-de-Mure",email:"chez.amoin@hotmail.fr"},
+  {id:45,nom:"RIQUIER Wilfried",contact:"Wilfried",tel:"06 68 28 63 40",adresse:"210 Rue du Devin 210C",cp:"38510",ville:"Creys-Mépieu",email:"wilriquier@live.fr"},
+  {id:46,nom:"QUINZIO Celine",contact:"Celine",tel:"07 57 40 78 69",adresse:"10 Chemin du Carré",cp:"38300",ville:"Ruy-Montceau",email:"celinequinzio@yahoo.fr"},
+  {id:47,nom:"BEJAOUI Mohamed",contact:"Mohamed",tel:"06 51 02 61 74",adresse:"6 rue des lévriers",cp:"69120",ville:"Vaulx en velin",email:"m.bejaoui@live.fr"},
+];
+
+const App = () => {
+    const [devis, setDevis] = useState([]);
+    const [clients, setClients] = useState(CLIENTS_INIT);
+    const [desigs, setDesigs] = useState(DESIGS_INIT);
+    const [nextNum, setNextNum] = useState(30);
+    const [view, setView] = useState("HOME");
+    const [selDevis, setSelDevis] = useState(null);
+    const [toast, setToast] = useState(null);
+    const [q, setQ] = useState("");
+    const [mailData, setMailData] = useState(null);
+
+    const showToast = useCallback((msg, ok=true) => {
+      setToast({msg, ok});
+      setTimeout(()=>setToast(null), 3000);
+    }, []);
+
+    /* ═══ LOGIQUE SUPABASE ═══ */
+
+    // 1. Charger les données au démarrage
+    useEffect(() => {
+      async function loadFromSupabase() {
+        const { data, error } = await supabaseClient
+          .from('TEST CTRLZED')
+          .select('content')
+          .eq('id', 1)
+          .single();
+
+        if (data && data.content) {
+          const d = data.content;
+          if (d.devis) setDevis(d.devis);
+          if (d.clients) setClients(d.clients);
+          if (d.desigs) setDesigs(d.desigs);
+          if (d.nextNum) setNextNum(d.nextNum);
+          showToast("✅ Données Cloud chargées");
+        } else {
+          // Fallback local si cloud vide au premier lancement
+          const saved = localStorage.getItem("polydeco_data");
+          if (saved) {
+            try {
+              const d = JSON.parse(saved);
+              if (d.devis) setDevis(d.devis);
+              if (d.clients) setClients(d.clients);
+              if (d.desigs) setDesigs(d.desigs);
+              if (d.nextNum) setNextNum(d.nextNum);
+            } catch (e) { console.error("Erreur chargement local", e); }
+          }
+        }
+      }
+      loadFromSupabase();
+    }, []);
+
+    // 2. Sauvegarder les données
+    const saveData = useCallback(async (newDevis, newClients, newDesigs, newNextNum) => {
+      const payload = { 
+        devis: newDevis, 
+        clients: newClients, 
+        desigs: newDesigs, 
+        nextNum: newNextNum,
+        updated_at: new Date().toISOString()
+      };
+      
+      // Sauvegarde Cloud
+      const { error } = await supabaseClient
+        .from('TEST CTRLZED')
+        .upsert({ id: 1, content: payload });
+
+      if (error) {
+        console.error("Erreur Cloud:", error);
+        showToast("⚠️ Erreur Cloud, sauvegarde locale uniquement", false);
+      }
+      
+      // On garde une copie locale par sécurité (mode hors-ligne)
+      localStorage.setItem("polydeco_data", JSON.stringify(payload));
+    }, []);
+
+    /* ═══ GESTION ACTIONS ═══ */
+    const updateClients = useCallback(c => { setClients(c); saveData(devis, c, desigs, nextNum); }, [devis, desigs, nextNum, saveData]);
+    const updateDesigs = useCallback(d => { setDesigs(d); saveData(devis, clients, d, nextNum); }, [devis, clients, nextNum, saveData]);
+    
+    const onSaveDevis = (d) => {
+      let nDevis, nNext = nextNum;
+      if (d.id) {
+        nDevis = devis.map(x => x.id === d.id ? d : x);
+      } else {
+        const id = Date.now();
+        const num = "D2600" + nextNum;
+        nDevis = [{...d, id, numero: num, date: new Date().toLocaleDateString("fr-FR")}, ...devis];
+        nNext = nextNum + 1;
+        setNextNum(nNext);
+      }
+      setDevis(nDevis);
+      saveData(nDevis, clients, desigs, nNext);
+      setView("HOME");
+      showToast("Devis enregistré !");
+    };
+
+    const onDelete = (id) => {
+      if(!confirm("Supprimer ce devis ?")) return;
+      const n = devis.filter(x => x.id !== id);
+      setDevis(n);
+      saveData(n, clients, desigs, nextNum);
+      showToast("Supprimé.");
+    };
+
+    const onStatut = (id, s) => {
+      const n = devis.map(x => x.id === id ? {...x, statut: s} : x);
+      setDevis(n);
+      saveData(n, clients, desigs, nextNum);
+    };
+
+    /* ═══ COMPOSANTS UI ═══ */
+    const Btn = ({onClick, children, bg=C.ba, color="#fff", style}) => (
+      <button className="btn-hover" onClick={onClick} style={{
+        background:bg, color, border:"none", borderRadius:8, padding:"8px 16px",
+        cursor:"pointer", fontSize:13, fontWeight:600, display:"inline-flex",
+        alignItems:"center", gap:8, ...style
+      }}>{children}</button>
+    );
+
+    const Card = ({children, title, right}) => (
+      <div style={{background:"#fff", borderRadius:12, boxShadow:"0 1px 3px rgba(0,0,0,0.1)", marginBottom:20, overflow:"hidden"}}>
+        {(title || right) && (
+          <div style={{padding:"14px 20px", borderBottom:`1px solid ${C.g100}`, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <h3 style={{fontSize:15, color:C.g800}}>{title}</h3>
+            {right}
+          </div>
+        )}
+        <div style={{padding:20}}>{children}</div>
+      </div>
+    );
+
+    /* ═══ VUES ═══ */
+    const HomeView = () => {
+      const filtered = devis.filter(d => 
+        (d.clientNom||"").toLowerCase().includes(q.toLowerCase()) || 
+        (d.numero||"").toLowerCase().includes(q.toLowerCase())
+      );
+      
+      return (
+        <div style={{maxWidth:1100, margin:"0 auto", padding:30}}>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:28}}>
+            <div>
+              <h1 style={{fontSize:22, color:C.bd}}>Tableau de bord</h1>
+              <p style={{color:C.g500, fontSize:14}}>PolyDeco Agencement — {devis.length} documents</p>
+            </div>
+            <Btn onClick={()=>{setSelDevis(null); setView("EDIT");}} style={{padding:"10px 20px"}}>
+              <span style={{fontSize:18}}>+</span> Nouveau Devis
+            </Btn>
+          </div>
+
+          <Card title="Rechercher un devis" right={
+            <div style={{position:"relative"}}>
+              <input type="text" placeholder="Nom client ou n°..." value={q} onChange={e=>setQ(e.target.value)}
+                style={{padding:"8px 12px 8px 32px", borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, width:240}} />
+              <span style={{position:"absolute", left:10, top:8, color:C.g400}}>🔍</span>
+            </div>
+          }>
+            <table style={{width:"100%", borderCollapse:"collapse", fontSize:14}}>
+              <thead>
+                <tr style={{borderBottom:`2px solid ${C.g100}`, color:C.g500, textAlign:"left"}}>
+                  <th style={{padding:"12px 8px"}}>N° Document</th>
+                  <th style={{padding:"12px 8px"}}>Date</th>
+                  <th style={{padding:"12px 8px"}}>Client</th>
+                  <th style={{padding:"12px 8px"}}>Montant TTC</th>
+                  <th style={{padding:"12px 8px"}}>Statut</th>
+                  <th style={{padding:"12px 8px", textAlign:"right"}}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(d => (
+                  <tr key={d.id} className="row-hover" style={{borderBottom:`1px solid ${C.g50}`, color:C.g600}}>
+                    <td style={{padding:12, fontWeight:600, color:C.bd}} onClick={()=> {setSelDevis(d); setView("EDIT");}}>{d.numero}</td>
+                    <td style={{padding:12}}>{d.date}</td>
+                    <td style={{padding:12}}>{d.clientNom}</td>
+                    <td style={{padding:12, fontWeight:700}}>{d.totalTTC.toLocaleString("fr-FR")} €</td>
+                    <td style={{padding:12}}>
+                      <select value={d.statut} onChange={e => onStatut(d.id, e.target.value)}
+                        style={{padding:"4px 8px", borderRadius:6, border:"none", fontSize:12, fontWeight:700,
+                          background: d.statut==="FACTURE" ? C.gr : (d.statut==="VALIDE" ? C.ba : C.g100),
+                          color: d.statut==="DEVIS" ? C.g600 : "#fff"
+                        }}>
+                        <option value="DEVIS">DEVIS</option>
+                        <option value="VALIDE">SIGNÉ</option>
+                        <option value="FACTURE">FACTURE</option>
+                      </select>
+                    </td>
+                    <td style={{padding:12, textAlign:"right"}}>
+                      <div style={{display:"flex", justifyContent:"flex-end", gap:8}}>
+                        <button title="Envoyer par email" onClick={()=>setMailData(d)} style={{border:"none", background:C.bl, color:C.ba, padding:6, borderRadius:6, cursor:"pointer"}}>✉️</button>
+                        <button title="Éditer" onClick={()=> {setSelDevis(d); setView("EDIT");}} style={{border:"none", background:C.g100, color:C.g600, padding:6, borderRadius:6, cursor:"pointer"}}>✏️</button>
+                        <button title="Supprimer" onClick={()=> onDelete(d.id)} style={{border:"none", background:"#fee2e2", color:C.re, padding:6, borderRadius:6, cursor:"pointer"}}>🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length === 0 && <div style={{textAlign:"center", padding:40, color:C.g400}}>Aucun résultat trouvé.</div>}
+          </Card>
+        </div>
+      );
+    };
+
+    /* ═══ ÉDITION DEVIS ═══ */
+    const EditView = ({initial}) => {
+      const [formData, setFormData] = useState(initial || {
+        clientNom:"", clientTel:"", clientEmail:"", clientAdresse:"", clientCp:"", clientVille:"",
+        lignes: [{id:Date.now(), desc:"", unite:"m²", qte:"1", pu:"0"}],
+        tva: "10", acompte: "30", statut: "DEVIS"
+      });
+      const [showC, setShowC] = useState(false);
+      const [showD, setShowD] = useState(false);
+
+      const addL = (item) => {
+        const nl = { id:Date.now(), desc:item?.label||"", unite:item?.unite||"m²", qte:"1", pu:item?.pu||"0" };
+        setFormData({...formData, lignes:[...formData.lignes, nl]});
+        setShowD(false);
+      };
+
+      const upL = (id, k, v) => {
+        setFormData({...formData, lignes: formData.lignes.map(l => l.id===id ? {...l, [k]:v} : l)});
+      };
+
+      const delL = (id) => {
+        if(formData.lignes.length > 1) setFormData({...formData, lignes: formData.lignes.filter(l => l.id!==id)});
+      };
+
+      const totals = formData.lignes.reduce((acc, l) => {
+        const r = parseFloat(l.qte||0) * parseFloat(l.pu||0);
+        return { ht: acc.ht + r };
+      }, {ht:0});
+      const tTVA = totals.ht * (parseFloat(formData.tva)/100);
+      const ttc = totals.ht + tTVA;
+
+      return (
+        <div style={{height:"100vh", display:"flex", flexDirection:"column", background:"#fff"}}>
+          {/* Header Édition */}
+          <div style={{padding:"12px 30px", background:C.bd, color:"#fff", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <div style={{display:"flex", alignItems:"center", gap:20}}>
+              <button onClick={()=>setView("HOME")} style={{background:"none", border:"none", color:"#fff", cursor:"pointer", fontSize:18}}>←</button>
+              <h2 style={{fontSize:16}}>{initial ? `Modification ${initial.numero}` : "Nouveau Devis"}</h2>
+            </div>
+            <div style={{display:"flex", gap:12}}>
+              <Btn onClick={()=>setView("HOME")} bg="rgba(255,255,255,0.1)">Annuler</Btn>
+              <Btn onClick={()=>onSaveDevis({...formData, totalHT:totals.ht, totalTTC:ttc})} bg={C.gr}>Enregistrer</Btn>
+            </div>
+          </div>
+
+          <div style={{flex:1, overflowY:"auto", padding:30, background:C.g50}}>
+            <div style={{maxWidth:1000, margin:"0 auto"}}>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 320px", gap:24}}>
+                
+                {/* Colonne Gauche : Lignes */}
+                <div>
+                  <Card title="Détail des prestations" right={<Btn onClick={()=>setShowD(true)} bg={C.bl} color={C.ba}>+ Ajouter depuis bibliothèque</Btn>}>
+                    {formData.lignes.map((l, idx) => (
+                      <div key={l.id} style={{display:"flex", gap:10, marginBottom:12, alignItems:"flex-start", paddingBottom:12, borderBottom:idx===formData.lignes.length-1?"none":`1px solid ${C.g100}`}}>
+                        <div style={{flex:1}}>
+                          <textarea placeholder="Description de la prestation..." value={l.desc} onChange={e=>upL(l.id,"desc",e.target.value)}
+                            style={{width:"100%", padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, minHeight:60, resize:"vertical"}} />
+                        </div>
+                        <div style={{width:80}}>
+                          <select value={l.unite} onChange={e=>upL(l.id,"unite",e.target.value)}
+                            style={{width:"100%", padding:8, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13}}>
+                            {UNITES.map(u=><option key={u} value={u}>{u}</option>)}
+                          </select>
+                        </div>
+                        <div style={{width:80}}>
+                          <input type="number" placeholder="Qté" value={l.qte} onChange={e=>upL(l.id,"qte",e.target.value)}
+                            style={{width:"100%", padding:8, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, textAlign:"center"}} />
+                        </div>
+                        <div style={{width:100}}>
+                          <input type="number" placeholder="Prix U." value={l.pu} onChange={e=>upL(l.id,"pu",e.target.value)}
+                            style={{width:"100%", padding:8, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, textAlign:"right", fontWeight:600}} />
+                        </div>
+                        <button onClick={()=>delL(l.id)} style={{border:"none", background:"none", color:C.re, cursor:"pointer", padding:8}}>✕</button>
+                      </div>
+                    ))}
+                    <Btn onClick={()=>addL()} bg={C.g100} color={C.g600} style={{width:"100%", justifyContent:"center", marginTop:10}}>+ Ajouter une ligne vide</Btn>
+                  </Card>
+                </div>
+
+                {/* Colonne Droite : Client & Totaux */}
+                <div>
+                  <Card title="Client" right={<button onClick={()=>setShowC(true)} style={{fontSize:12, color:C.ba, background:"none", border:"none", cursor:"pointer", textDecoration:"underline"}}>Annuaire</button>}>
+                    <input type="text" placeholder="Nom ou Société" value={formData.clientNom} onChange={e=>setFormData({...formData, clientNom:e.target.value})}
+                      style={{width:"100%", padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, marginBottom:10, fontWeight:700}} />
+                    <input type="text" placeholder="Téléphone" value={formData.clientTel} onChange={e=>setFormData({...formData, clientTel:e.target.value})}
+                      style={{width:"100%", padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, marginBottom:10}} />
+                    <input type="text" placeholder="Adresse complète" value={formData.clientAdresse} onChange={e=>setFormData({...formData, clientAdresse:e.target.value})}
+                      style={{width:"100%", padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13, marginBottom:10}} />
+                    <div style={{display:"flex", gap:8}}>
+                      <input type="text" placeholder="CP" value={formData.clientCp} onChange={e=>setFormData({...formData, clientCp:e.target.value})}
+                        style={{width:80, padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13}} />
+                      <input type="text" placeholder="Ville" value={formData.clientVille} onChange={e=>setFormData({...formData, clientVille:e.target.value})}
+                        style={{flex:1, padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13}} />
+                    </div>
+                  </Card>
+
+                  <Card title="Options & Totaux">
+                    <div style={{marginBottom:15}}>
+                      <label style={{fontSize:12, color:C.g500, display:"block", marginBottom:4}}>Taux TVA (%)</label>
+                      <select value={formData.tva} onChange={e=>setFormData({...formData, tva:e.target.value})}
+                        style={{width:"100%", padding:10, borderRadius:8, border:`1px solid ${C.g200}`, fontSize:13}}>
+                        <option value="0">0% (Auto-entrepreneur)</option>
+                        <option value="10">10% (Rénovation)</option>
+                        <option value="20">20% (Neuf/Fourniture)</option>
+                      </select>
+                    </div>
+
+                    <div style={{background:C.g50, padding:15, borderRadius:10}}>
+                      <div style={{display:"flex", justifyContent:"space-between", fontSize:14, marginBottom:8}}>
+                        <span>Total HT</span>
+                        <span style={{fontWeight:600}}>{totals.ht.toLocaleString("fr-FR")} €</span>
+                      </div>
+                      <div style={{display:"flex", justifyContent:"space-between", fontSize:14, marginBottom:12, color:C.g500}}>
+                        <span>TVA ({formData.tva}%)</span>
+                        <span>{tTVA.toLocaleString("fr-FR")} €</span>
+                      </div>
+                      <div style={{display:"flex", justifyContent:"space-between", fontSize:18, fontWeight:800, color:C.bd, borderTop:`1px solid ${C.g200}`, paddingTop:12}}>
+                        <span>TOTAL TTC</span>
+                        <span>{ttc.toLocaleString("fr-FR")} €</span>
+                      </div>
+                    </div>
+                  </Card>
+                </div>
+
+              </div>
+            </div>
+          </div>
+
+          {/* Modale Clients */}
+          {showC && (
+            <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
+              <div className="modal-anim" style={{background:"#fff", width:"100%", maxWidth:600, borderRadius:16, overflow:"hidden", boxShadow:"0 20px 50px rgba(0,0,0,0.3)"}}>
+                <div style={{padding:20, borderBottom:`1px solid ${C.g100}`, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                  <h3 style={{fontSize:16}}>Annuaire Clients</h3>
+                  <button onClick={()=>setShowC(false)} style={{border:"none", background:"none", fontSize:20, cursor:"pointer"}}>✕</button>
+                </div>
+                <div style={{maxHeight:400, overflowY:"auto", padding:10}}>
+                  {clients.map(c => (
+                    <div key={c.id} className="row-hover" onClick={()=>{
+                      setFormData({...formData, clientNom:c.nom, clientTel:c.tel, clientEmail:c.email, clientAdresse:c.adresse, clientCp:c.cp, clientVille:c.ville});
+                      setShowC(false);
+                    }} style={{padding:12, borderBottom:`1px solid ${C.g50}`, borderRadius:8}}>
+                      <div style={{fontWeight:700, fontSize:14, color:C.bd}}>{c.nom}</div>
+                      <div style={{fontSize:12, color:C.g500}}>{c.ville} — {c.tel}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modale Bibliothèque */}
+          {showD && (
+            <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
+              <div className="modal-anim" style={{background:"#fff", width:"100%", maxWidth:700, borderRadius:16, overflow:"hidden", boxShadow:"0 20px 50px rgba(0,0,0,0.3)"}}>
+                <div style={{padding:20, borderBottom:`1px solid ${C.g100}`, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                  <h3 style={{fontSize:16}}>Bibliothèque de prestations</h3>
+                  <button onClick={()=>setShowD(false)} style={{border:"none", background:"none", fontSize:20, cursor:"pointer"}}>✕</button>
+                </div>
+                <div style={{maxHeight:500, overflowY:"auto", padding:10}}>
+                  {CATS.map(cat => (
+                    <div key={cat}>
+                      <div style={{padding:"10px 12px", background:C.g50, fontSize:12, fontWeight:800, color:C.g400, textTransform:"uppercase", letterSpacing:1, marginTop:10, borderRadius:6}}>{cat}</div>
+                      {desigs.filter(d=>d.cat===cat).map(d => (
+                        <div key={d.id} className="row-hover" onClick={()=>addL(d)} style={{padding:12, borderBottom:`1px solid ${C.g50}`, borderRadius:8}}>
+                          <div style={{fontSize:14, color:C.g800}}>{d.label}</div>
+                          <div style={{fontSize:12, color:C.ba, fontWeight:600}}>{d.pu || "0"} € / {d.unite}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    /* ═══ PDF GÉNÉRATION ═══ */
+    const generatePDFBlob = async (d, mentions) => {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit:'mm', format:'a4' });
+
+      // Fonts
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(22);
+      doc.setTextColor(26, 58, 92); // C.bd
+      doc.text("PolyDeco Agencement", 20, 25);
+      
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(100);
+      doc.text("Aménagement & Rénovation Intérieure", 20, 31);
+      doc.text("Mourad TAGHZAOUI", 20, 36);
+      doc.text("📞 06 69 16 64 42", 20, 41);
+      doc.text("📧 polydeco.agencement@gmail.com", 20, 46);
+      doc.text("SIRET : 913 223 931 00010", 20, 51);
+
+      // Titre Document
+      doc.setDrawColor(226, 232, 240);
+      doc.line(20, 60, 190, 60);
+      
+      doc.setFontSize(18);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(26, 58, 92);
+      const title = d.statut === "FACTURE" ? "FACTURE" : "DEVIS";
+      doc.text(`${title} N° ${d.numero}`, 20, 72);
+      
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(100);
+      doc.text(`Date d'émission : ${d.date}`, 20, 78);
+
+      // Bloc Client
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(120, 65, 70, 35, 3, 3, 'F');
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(26, 58, 92);
+      doc.text("DESTINATAIRE :", 125, 72);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.text(d.clientNom || "", 125, 78);
+      doc.setFontSize(9);
+      doc.setTextColor(100);
+      doc.text(d.clientAdresse || "", 125, 83, {maxWidth:60});
+      doc.text(`${d.clientCp || ""} ${d.clientVille || ""}`, 125, 93);
+
+      // Tableau
+      let y = 110;
+      doc.setFillColor(26, 58, 92);
+      doc.rect(20, y, 170, 8, 'F');
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(255);
+      doc.setFontSize(9);
+      doc.text("DESCRIPTION DES TRAVAUX", 25, y+5.5);
+      doc.text("QTÉ", 135, y+5.5);
+      doc.text("UNITÉ", 150, y+5.5);
+      doc.text("P.U HT", 170, y+5.5);
+
+      y += 8;
+      doc.setTextColor(60);
+      doc.setFont("helvetica", "normal");
+      
+      d.lignes.forEach((l, i) => {
+        const descLines = doc.splitTextToSize(l.desc, 105);
+        const rowH = Math.max(8, descLines.length * 5);
+        
+        if (y + rowH > 260) { doc.addPage(); y = 20; }
+        
+        if(i%2===0) { doc.setFillColor(252, 252, 252); doc.rect(20, y, 170, rowH, 'F'); }
+        doc.line(20, y+rowH, 190, y+rowH); // ligne séparatrice
+        
+        doc.text(descLines, 25, y+5);
+        doc.text(String(l.qte), 138, y+5, {align:'center'});
+        doc.text(l.unite, 155, y+5, {align:'center'});
+        doc.text(`${parseFloat(l.pu).toLocaleString("fr-FR", {minimumFractionDigits:2})} €`, 185, y+5, {align:'right'});
+        
+        y += rowH;
+      });
+
+      // Totaux
+      y += 10;
+      if (y > 240) { doc.addPage(); y = 20; }
+      
+      const startX = 130;
+      doc.setFontSize(10);
+      doc.text("TOTAL HT", startX, y);
+      doc.text(`${d.totalHT.toLocaleString("fr-FR", {minimumFractionDigits:2})} €`, 185, y, {align:'right'});
+      
+      y += 6;
+      doc.text(`TVA (${d.tva}%)`, startX, y);
+      doc.text(`${(d.totalTTC - d.totalHT).toLocaleString("fr-FR", {minimumFractionDigits:2})} €`, 185, y, {align:'right'});
+      
+      y += 2;
+      doc.setDrawColor(26, 58, 92);
+      doc.setLineWidth(0.5);
+      doc.line(startX, y, 190, y);
+      
+      y += 6;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(26, 58, 92);
+      doc.text("TOTAL TTC", startX, y);
+      doc.text(`${d.totalTTC.toLocaleString("fr-FR", {minimumFractionDigits:2})} €`, 185, y, {align:'right'});
+
+      // Acompte
+      y += 10;
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "italic");
+      doc.setTextColor(100);
+      const acompteVal = d.totalTTC * 0.3;
+      doc.text(`Acompte de 30% à régler à la commande : ${acompteVal.toLocaleString("fr-FR", {minimumFractionDigits:2})} €`, startX-20, y, {align:'left'});
+
+      // Mentions légales
+      y = 255;
+      doc.setFontSize(7);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(150);
+      const footerTxt = "PolyDeco Agencement — 523 Avenue de la Gare, 38290 La Verpillière — SIRET 91322393100010 — Assurance Décennale AXA N°10862541004";
+      doc.text(footerTxt, 105, 290, {align:'center'});
+      
+      // Page 2 : CGV / Mentions détaillées
+      doc.addPage();
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.setTextColor(26, 58, 92);
+      doc.text("CONDITIONS GÉNÉRALES ET MENTIONS", 20, 20);
+      
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(80);
+      let my = 30;
+      mentions.forEach((m, idx) => {
+        doc.text(`${idx+1}. ${m}`, 20, my, {maxWidth:170});
+        my += doc.splitTextToSize(m, 170).length * 4 + 2;
+      });
+
+      return doc.output('blob');
+    };
+
+    return (
+      <div style={{height:"100vh", display:"flex", flexDirection:"column"}}>
+        {view === "HOME" ? <HomeView /> : <EditView initial={selDevis} />}
+
+        {/* ════ MODALE EMAIL ════ */}
+        {mailData && (() => {
+          const { mailto, subject, body, email } = buildMailto(mailData, MENTIONS);
+          const pdfName = `PolyDeco_${mailData.numero}_${mailData.clientNom.replace(/\s+/g,'_')}.pdf`;
+
+          const handleEnvoyer = async () => {
+            showToast("⏳ Préparation du PDF et d'Outlook...");
+            try {
+              // 1. Déclenche le téléchargement du PDF
+              const blob = await generatePDFBlob(mailData, MENTIONS);
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = pdfName;
+              a.click();
+              
+              // 2. Ouvre Outlook avec le texte
+              window.location.href = mailto;
+              
+              setMailData(null);
+              showToast("✅ PDF prêt + Outlook ouvert !");
+            } catch(e) {
+              showToast("❌ Erreur : " + e.message, false);
+            }
+          };
+
+          return (
+            <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:10000, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
+              <div className="modal-anim" style={{background:"#fff", width:"100%", maxWidth:650, borderRadius:20, overflow:"hidden"}}>
+                <div style={{padding:"20px 25px", background:C.bd, color:"#fff", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                  <h3 style={{fontSize:16}}>Prêt pour l'envoi</h3>
+                  <button onClick={()=>setMailData(null)} style={{background:"none", border:"none", color:"#fff", fontSize:20, cursor:"pointer"}}>✕</button>
+                </div>
+                <div style={{padding:25}}>
+                  <div style={{marginBottom:20}}>
+                    <label style={{fontSize:12, fontWeight:700, color:C.g500, display:"block", marginBottom:5}}>DESTINATAIRE</label>
+                    <div style={{padding:12, background:C.g50, borderRadius:8, fontSize:14, fontWeight:600, border:`1px solid ${C.g200}`}}>
+                      {email || <span style={{color:C.re}}>⚠️ Aucun email renseigné</span>}
+                    </div>
+                  </div>
+                  <div style={{marginBottom:20}}>
+                    <label style={{fontSize:12, fontWeight:700, color:C.g500, display:"block", marginBottom:5}}>CONTENU DU MESSAGE</label>
+                    <div style={{padding:15, background:C.g50, borderRadius:8, fontSize:13, border:`1px solid ${C.g200}`, whiteSpace:"pre-wrap", maxHeight:200, overflowY:"auto"}}>
+                      {body}
+                    </div>
+                  </div>
+                  <div style={{display:"flex", gap:12, justifyContent:"flex-end", borderTop:`1px solid ${C.g100}`, paddingTop:20}}>
+                    <Btn onClick={()=>setMailData(null)} bg={C.g100} color={C.g600}>Annuler</Btn>
+                    <Btn onClick={async()=>{
+                      showToast("⏳ Génération du PDF…");
+                      try {
+                        const blob = await generatePDFBlob(mailData, MENTIONS);
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href=url; a.download=pdfName; a.click();
+                        setTimeout(()=>URL.revokeObjectURL(url),5000);
+                        showToast("✅ PDF téléchargé !");
+                      } catch(e){ showToast("❌ "+e.message,false); }
+                    }} bg={C.gr}>📄 PDF uniquement</Btn>
+                    <Btn onClick={handleEnvoyer} bg="#0284c7" style={{padding:"10px 20px",fontSize:14,fontWeight:700}}>
+                      ✉️ Télécharger PDF + Ouvrir Outlook
+                    </Btn>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ════ TOAST ════ */}
+        {toast && (
+          <div style={{position:"fixed",bottom:28,right:28,background:toast.ok?C.g800:"#dc2626",color:"#fff",
+            borderRadius:12,padding:"13px 20px",fontSize:14,fontWeight:500,
+            boxShadow:"0 8px 32px rgba(0,0,0,0.25)",zIndex:9999,animation:"toastIn 0.25s ease",
+            display:"flex",alignItems:"center",gap:10}}>
+            <span>{toast.ok?"✔️":"⚠️"}</span>
+            {toast.msg}
+          </div>
+        )}
+      </div>
+    );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('app'));
+root.render(<App />);
+</script>
+</body>
+</html>
